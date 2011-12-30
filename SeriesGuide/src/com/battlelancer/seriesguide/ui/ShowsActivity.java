@@ -14,6 +14,10 @@ import com.battlelancer.seriesguide.util.Utils;
 import com.battlelancer.thetvdbapi.ImageCache;
 import com.battlelancer.thetvdbapi.TheTVDB;
 
+import net.londatiga.android.ActionItem;
+import net.londatiga.android.QuickAction;
+import net.londatiga.android.QuickAction.OnActionItemClickListener;
+
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.app.ProgressDialog;
@@ -43,8 +47,6 @@ import android.support.v4.view.Menu;
 import android.support.v4.view.MenuItem;
 import android.support.v4.widget.SimpleCursorAdapter;
 import android.text.format.DateUtils;
-import android.view.ContextMenu;
-import android.view.ContextMenu.ContextMenuInfo;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -53,8 +55,8 @@ import android.view.animation.AnimationUtils;
 import android.widget.AbsListView;
 import android.widget.AbsListView.OnScrollListener;
 import android.widget.AdapterView;
-import android.widget.AdapterView.AdapterContextMenuInfo;
 import android.widget.AdapterView.OnItemClickListener;
+import android.widget.AdapterView.OnItemLongClickListener;
 import android.widget.ArrayAdapter;
 import android.widget.GridView;
 import android.widget.ImageView;
@@ -77,13 +79,13 @@ public class ShowsActivity extends BaseActivity implements AbsListView.OnScrollL
 
     private static final int CONTEXT_DELETE_ID = 200;
 
-    private static final int CONTEXT_UPDATESHOW_ID = 201;
+    private static final int CONTEXT_UPDATE_ID = 201;
 
-    private static final int CONTEXT_MARKNEXT = 203;
+    private static final int CONTEXT_MARKNEXT_ID = 203;
 
-    private static final int CONTEXT_FAVORITE = 204;
+    private static final int CONTEXT_FAVORITE_ID = 204;
 
-    private static final int CONTEXT_UNFAVORITE = 205;
+    private static final int CONTEXT_UNFAVORITE_ID = 205;
 
     private static final int CONFIRM_DELETE_DIALOG = 304;
 
@@ -145,7 +147,7 @@ public class ShowsActivity extends BaseActivity implements AbsListView.OnScrollL
                 .getDefaultSharedPreferences(getApplicationContext());
 
         // setup action bar filter list (! use different layouts for ABS)
-        ActionBar actionBar = getSupportActionBar();
+        final ActionBar actionBar = getSupportActionBar();
         actionBar.setDisplayShowTitleEnabled(false);
         actionBar.setNavigationMode(ActionBar.NAVIGATION_MODE_LIST);
         ArrayAdapter<CharSequence> mActionBarList = ArrayAdapter.createFromResource(this,
@@ -186,6 +188,90 @@ public class ShowsActivity extends BaseActivity implements AbsListView.OnScrollL
                 startActivity(i);
             }
         });
+        list.setOnItemLongClickListener(new OnItemLongClickListener() {
+            @Override
+            public boolean onItemLongClick(AdapterView<?> arg0, View v, int arg2, final long id) {
+                final QuickAction quickAction = new QuickAction(ShowsActivity.this,
+                        QuickAction.VERTICAL);
+
+                // decide whether it is favorite or unfavorite
+                final Cursor show = getContentResolver().query(
+                        Shows.buildShowUri(String.valueOf(id)), new String[] {
+                            Shows.FAVORITE
+                        }, null, null, null);
+                show.moveToFirst();
+                if (show.getInt(0) == 0) {
+                    quickAction.addActionItem(new ActionItem(CONTEXT_FAVORITE_ID,
+                            getString(R.string.context_favorite)));
+                } else {
+                    quickAction.addActionItem(new ActionItem(CONTEXT_UNFAVORITE_ID,
+                            getString(R.string.context_unfavorite)));
+                }
+                show.close();
+
+                // add remaining actions
+                quickAction.addActionItem(new ActionItem(CONTEXT_MARKNEXT_ID,
+                        getString(R.string.context_marknext)));
+                quickAction.addActionItem(new ActionItem(CONTEXT_UPDATE_ID,
+                        getString(R.string.context_updateshow)));
+                quickAction.addActionItem(new ActionItem(CONTEXT_DELETE_ID,
+                        getString(R.string.delete_show)));
+
+                // on click listeners
+                quickAction.setOnActionItemClickListener(new OnActionItemClickListener() {
+                    @Override
+                    public void onItemClick(QuickAction source, int pos, int actionId) {
+                        switch (actionId) {
+                            case CONTEXT_FAVORITE_ID: {
+                                fireTrackerEvent("Favorite show");
+
+                                ContentValues values = new ContentValues();
+                                values.put(Shows.FAVORITE, true);
+                                getContentResolver().update(Shows.buildShowUri(String.valueOf(id)),
+                                        values, null, null);
+                                Toast.makeText(ShowsActivity.this, getString(R.string.favorited),
+                                        Toast.LENGTH_SHORT).show();
+                                break;
+                            }
+                            case CONTEXT_UNFAVORITE_ID: {
+                                fireTrackerEvent("Unfavorite show");
+
+                                ContentValues values = new ContentValues();
+                                values.put(Shows.FAVORITE, false);
+                                getContentResolver().update(Shows.buildShowUri(String.valueOf(id)),
+                                        values, null, null);
+                                Toast.makeText(ShowsActivity.this, getString(R.string.unfavorited),
+                                        Toast.LENGTH_SHORT).show();
+                                break;
+                            }
+                            case CONTEXT_DELETE_ID:
+                                fireTrackerEvent("Delete show");
+
+                                if (!TaskManager.getInstance(ShowsActivity.this)
+                                        .isUpdateTaskRunning(true)) {
+                                    mToDeleteId = id;
+                                    showDialog(CONFIRM_DELETE_DIALOG);
+                                }
+                                break;
+                            case CONTEXT_UPDATE_ID:
+                                fireTrackerEvent("Update show");
+
+                                performUpdateTask(false, String.valueOf(id));
+                                break;
+                            case CONTEXT_MARKNEXT_ID:
+                                fireTrackerEvent("Mark next episode");
+
+                                DBUtils.markNextEpisode(ShowsActivity.this, id);
+                                Utils.updateLatestEpisode(ShowsActivity.this, String.valueOf(id));
+                                break;
+                        }
+                    }
+                });
+
+                quickAction.show(v);
+                return true;
+            }
+        });
         list.setOnScrollListener(this);
         View emptyView = findViewById(R.id.empty);
         if (emptyView != null) {
@@ -196,8 +282,6 @@ public class ShowsActivity extends BaseActivity implements AbsListView.OnScrollL
         Bundle args = new Bundle();
         args.putInt(FILTER_ID, showfilter);
         getSupportLoaderManager().initLoader(LOADER_ID, args, this);
-
-        registerForContextMenu(list);
     }
 
     @Override
@@ -369,76 +453,6 @@ public class ShowsActivity extends BaseActivity implements AbsListView.OnScrollL
                                 }).create();
         }
         return null;
-    }
-
-    @Override
-    public void onCreateContextMenu(ContextMenu menu, View v, ContextMenuInfo menuInfo) {
-        super.onCreateContextMenu(menu, v, menuInfo);
-        menuInfo.toString();
-        AdapterContextMenuInfo info = (AdapterContextMenuInfo) menuInfo;
-        final Cursor show = getContentResolver().query(Shows.buildShowUri(String.valueOf(info.id)),
-                new String[] {
-                    Shows.FAVORITE
-                }, null, null, null);
-        show.moveToFirst();
-        if (show.getInt(0) == 0) {
-            menu.add(0, CONTEXT_FAVORITE, 0, R.string.context_favorite);
-        } else {
-            menu.add(0, CONTEXT_UNFAVORITE, 0, R.string.context_unfavorite);
-        }
-        show.close();
-
-        menu.add(0, CONTEXT_MARKNEXT, 1, R.string.context_marknext);
-        menu.add(0, CONTEXT_UPDATESHOW_ID, 2, R.string.context_updateshow);
-        menu.add(0, CONTEXT_DELETE_ID, 3, R.string.delete_show);
-    }
-
-    @Override
-    public boolean onContextItemSelected(android.view.MenuItem item) {
-        AdapterContextMenuInfo info = (AdapterContextMenuInfo) item.getMenuInfo();
-
-        switch (item.getItemId()) {
-            case CONTEXT_FAVORITE: {
-                fireTrackerEvent("Favorite show");
-
-                ContentValues values = new ContentValues();
-                values.put(Shows.FAVORITE, true);
-                getContentResolver().update(Shows.buildShowUri(String.valueOf(info.id)), values,
-                        null, null);
-                Toast.makeText(this, getString(R.string.favorited), Toast.LENGTH_SHORT).show();
-                return true;
-            }
-            case CONTEXT_UNFAVORITE: {
-                fireTrackerEvent("Unfavorite show");
-
-                ContentValues values = new ContentValues();
-                values.put(Shows.FAVORITE, false);
-                getContentResolver().update(Shows.buildShowUri(String.valueOf(info.id)), values,
-                        null, null);
-                Toast.makeText(this, getString(R.string.unfavorited), Toast.LENGTH_SHORT).show();
-                return true;
-            }
-            case CONTEXT_DELETE_ID:
-                fireTrackerEvent("Delete show");
-
-                if (!TaskManager.getInstance(this).isUpdateTaskRunning(true)) {
-                    mToDeleteId = info.id;
-                    showDialog(CONFIRM_DELETE_DIALOG);
-                }
-                return true;
-            case CONTEXT_UPDATESHOW_ID:
-                fireTrackerEvent("Update show");
-
-                performUpdateTask(false, String.valueOf(info.id));
-                return true;
-            case CONTEXT_MARKNEXT:
-                fireTrackerEvent("Mark next episode");
-
-                DBUtils.markNextEpisode(this, info.id);
-                Utils.updateLatestEpisode(this, String.valueOf(info.id));
-                return true;
-        }
-        return super.onContextItemSelected(item);
     }
 
     @Override
